@@ -4,6 +4,7 @@ import json
 from typing import Dict, Optional, Tuple, List
 
 import altair as alt
+import pandas as pd  # ✅ 차트 오류 해결을 위해 추가
 import requests
 import streamlit as st
 
@@ -134,7 +135,6 @@ def generate_report(
         ),
     }.get(coach_style, "너는 실용적인 습관 코치다. 짧고 명확하게 답해라.")
 
-    # 입력 요약
     habit_lines = []
     for name, done in habits.items():
         habit_lines.append(f"- {name}: {'완료' if done else '미완료'}")
@@ -208,8 +208,6 @@ def _seed_demo_records_if_needed():
 
     today = dt.date.today()
     demo = []
-    # 최근 6일 샘플
-    # (rate는 대충 랜덤 느낌으로 만들되, 고정값으로)
     sample = [
         (today - dt.timedelta(days=6), 3, 60.0, 6),
         (today - dt.timedelta(days=5), 2, 40.0, 5),
@@ -259,7 +257,6 @@ with st.sidebar:
 # -----------------------------
 st.title("AI 습관 트래커")
 
-# 도시 10개 예시
 CITY_CHOICES = [
     "Seoul",
     "Busan",
@@ -278,7 +275,6 @@ coach_style = st.radio("코치 스타일", ["스파르타 코치", "따뜻한 �
 
 st.subheader("✅ 습관 체크인")
 
-# 체크박스 5개를 2열 배치 + 이모지
 habit_defs = [
     ("🌅 기상 미션", "wake"),
     ("💧 물 마시기", "water"),
@@ -309,7 +305,6 @@ habits = {
 checked_count = sum(1 for v in habits.values() if v)
 rate = round((checked_count / 5) * 100.0, 1)
 
-# 오늘 데이터는 session_state 기록에 항상 반영 (자동 저장)
 _upsert_today_record(checked_count=checked_count, rate=rate, mood=mood)
 
 st.divider()
@@ -327,34 +322,44 @@ with m3:
 
 # -----------------------------
 # 7-day bar chart (6 demo + today)
+# ✅ FIX: DataFrame + datetime + date:T 로 변경 (Altair v6 호환)
 # -----------------------------
-# 최근 7일만 정렬하여 표시
 today = dt.date.today()
-window = [(today - dt.timedelta(days=i)).isoformat() for i in range(6, -1, -1)]
+window_dates = [today - dt.timedelta(days=i) for i in range(6, -1, -1)]
 
-# date -> record
 rec_map = {r["date"]: r for r in st.session_state["records"]}
 chart_rows = []
-for d in window:
-    r = rec_map.get(d)
-    if r:
-        chart_rows.append({"date": d, "달성률": r.get("rate", 0.0), "달성개수": r.get("checked", 0)})
-    else:
-        chart_rows.append({"date": d, "달성률": 0.0, "달성개수": 0})
+for d in window_dates:
+    d_str = d.isoformat()
+    r = rec_map.get(d_str)
+    chart_rows.append(
+        {
+            "date": d,  # ✅ date 객체로 저장
+            "달성률": float((r or {}).get("rate", 0.0)),
+            "달성개수": int((r or {}).get("checked", 0)),
+        }
+    )
 
 st.subheader("📈 최근 7일 달성률")
-df = chart_rows
+
+df_chart = pd.DataFrame(chart_rows)
+df_chart["date"] = pd.to_datetime(df_chart["date"])  # ✅ temporal로 확실히
 
 chart = (
-    alt.Chart(alt.Data(values=df))
+    alt.Chart(df_chart)
     .mark_bar()
     .encode(
-        x=alt.X("date:N", title="날짜", sort=window),
+        x=alt.X("date:T", title="날짜", axis=alt.Axis(format="%m-%d")),
         y=alt.Y("달성률:Q", title="달성률(%)"),
-        tooltip=["date", "달성률", "달성개수"],
+        tooltip=[
+            alt.Tooltip("date:T", title="날짜", format="%Y-%m-%d"),
+            alt.Tooltip("달성률:Q", title="달성률(%)"),
+            alt.Tooltip("달성개수:Q", title="달성개수"),
+        ],
     )
     .properties(height=260)
 )
+
 st.altair_chart(chart, use_container_width=True)
 
 st.divider()
@@ -367,7 +372,6 @@ st.subheader("🧠 AI 코치 리포트")
 btn = st.button("컨디션 리포트 생성", use_container_width=True)
 
 if btn:
-    # weather + dog refresh on generate
     weather = get_weather(city, weather_key)
     dog = get_dog_image()
 
@@ -390,7 +394,6 @@ if btn:
     else:
         st.session_state["ai_report"] = report or ""
 
-        # 공유용 텍스트(간단 요약 + 체크)
         share = []
         share.append(f"📅 {dt.date.today().isoformat()} | AI 습관 트래커")
         share.append(f"✅ 달성: {checked_count}/5 ({rate:.1f}%) | 🙂 기분: {mood}/10")
