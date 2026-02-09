@@ -1,26 +1,25 @@
 # app.py
 # ─────────────────────────────────────────────────────────────
-# AI 습관 트래커 (마법 요정 에디션) - 개선판
+# AI 습관 트래커 (마법 요정 에디션) - 오류 수정 + 지역 선택 제거 + 캘린더 직관 강화
 #
-# ✅ 수정 사항
-# 1) 컨디션 리포트 생성 오류 수정
-#    - OpenAI Responses API 우선 사용
-#    - 실패 시 Chat Completions로 폴백
-#    - 실패 원인(에러 메시지) UI에 표시
-#
-# 2) 습관 트래커 캘린더 UI를 더 직관적으로
-#    - 월간 캘린더 7열 그리드
-#    - 날짜 셀에 습관 스티커(이모지+✅/▫️) 표시
-#    - 날짜 선택 → 해당 날짜 기록 편집/저장
+# ✅ 이번 수정 포인트(사용자 에러 로그 반영)
+# 1) Responses API 오류(400):
+#    - content type을 'text' -> 'input_text'로 수정
+# 2) Chat Completions 오류(400):
+#    - gpt-5-mini 모델에서 temperature=0.75 미지원 → temperature 파라미터 제거(기본값 사용)
+# 3) "지역(도시) 선택" UI 제거
+# 4) 캘린더 형태로 습관 트래커를 더 직관적으로:
+#    - 월간 캘린더(7열) + 날짜칸에 습관 스티커(이모지✅/▫️) 표시
+#    - 날짜 선택 → 그날 기록 편집/저장
 #
 # ✅ 포함 기능
-# - 사이드바: OpenAI API Key 입력 (secrets 우선)
-# - 체크인: 5습관(2열), 기분(1~10), 도시(10), 코치스타일(3),
-#          물(ml), 운동(분), 메모, 시간대 체크
-# - 7일 달성률 바차트
-# - “오늘의 파트너 핑(오리지널 카드)” + 스탯 바차트(빨간색)
-# - 공유용 JSON 텍스트
-# - API 안내 expander
+# - 사이드바: OpenAI API Key (secrets 우선)
+# - 습관 체크인: 5개(2열), 기분(1~10), 코치 스타일(3),
+#               물(ml), 운동(분), 메모, 시간대 체크
+# - 최근 7일 달성률 바 차트
+# - 오리지널 “파트너 핑(요정 카드)” + 스탯 바 차트(빨간색)
+# - AI 컨디션 리포트(모델 gpt-5-mini)
+# - 공유용 JSON
 # ─────────────────────────────────────────────────────────────
 
 from __future__ import annotations
@@ -68,19 +67,6 @@ TIME_SLOTS = [
     ("🌙", "밤"),
 ]
 
-CITIES = [
-    "Seoul",
-    "Busan",
-    "Incheon",
-    "Daegu",
-    "Daejeon",
-    "Gwangju",
-    "Ulsan",
-    "Suwon",
-    "Sejong",
-    "Jeju",
-]
-
 COACH_STYLES = ["스파르타 코치", "따뜻한 멘토", "게임 마스터"]
 
 
@@ -106,12 +92,17 @@ def safe_int(x: Any, default: int) -> int:
         return default
 
 
-def day_key(d: date) -> str:
-    return d.isoformat()
-
-
 def calc_checked(habits: Dict[str, bool]) -> int:
     return sum(1 for _, name in HABITS if habits.get(name))
+
+
+def ensure_habits_dict(h: Optional[Dict[str, Any]]) -> Dict[str, bool]:
+    base = {name: False for _, name in HABITS}
+    if not h:
+        return base
+    for _, name in HABITS:
+        base[name] = bool(h.get(name))
+    return base
 
 
 # =============================
@@ -170,7 +161,6 @@ def _style_system_prompt(style: str) -> str:
 
 
 def build_user_prompt(
-    city: str,
     mood: int,
     checked_habits: List[str],
     unchecked_habits: List[str],
@@ -185,12 +175,8 @@ def build_user_prompt(
         f"한마디: {ping.get('phrase')}\n"
         f"스탯: {ping.get('stats')}"
     )
-
     return f"""
 아래 데이터를 기반으로 리포트를 작성해줘.
-
-[도시]
-{city}
 
 [오늘 기분 점수]
 {mood}/10
@@ -245,59 +231,60 @@ def generate_report(
     Returns: (report_text_or_None, error_message_or_None)
     - Responses API 우선
     - 실패 시 Chat Completions 폴백
+    - gpt-5-mini에서 temperature 커스텀 미지원 -> temperature 파라미터 제거
     """
     api_key = clean(api_key)
     if not api_key:
         return None, "OpenAI API Key가 비어있습니다."
 
+    client = _get_openai_client(api_key)
+
+    # 1) Responses API (content type: input_text)
     try:
-        client = _get_openai_client(api_key)
+        resp = client.responses.create(
+            model=MODEL_NAME,
+            input=[
+                {
+                    "role": "system",
+                    "content": [{"type": "input_text", "text": _style_system_prompt(coach_style)}],
+                },
+                {"role": "user", "content": [{"type": "input_text", "text": user_prompt}]},
+            ],
+            # temperature 미지정(기본값 사용)
+        )
+        if getattr(resp, "output_text", None):
+            return str(resp.output_text).strip(), None
 
-        # 1) Responses API
-        try:
-            resp = client.responses.create(
-                model=MODEL_NAME,
-                input=[
-                    {"role": "system", "content": [{"type": "text", "text": _style_system_prompt(coach_style)}]},
-                    {"role": "user", "content": [{"type": "text", "text": user_prompt}]},
-                ],
-                temperature=0.75,
-            )
-            if getattr(resp, "output_text", None):
-                return str(resp.output_text).strip(), None
+        # fallback extraction
+        out_texts: List[str] = []
+        for item in getattr(resp, "output", []) or []:
+            for c in getattr(item, "content", []) or []:
+                if getattr(c, "type", None) in ("output_text", "summary_text"):
+                    out_texts.append(getattr(c, "text", ""))
+        text = "\n".join([t for t in out_texts if t]).strip()
+        if text:
+            return text, None
 
-            # fallback extraction
-            out_texts: List[str] = []
-            for item in getattr(resp, "output", []) or []:
-                for c in getattr(item, "content", []) or []:
-                    if getattr(c, "type", None) == "output_text":
-                        out_texts.append(getattr(c, "text", ""))
-            text = "\n".join([t for t in out_texts if t]).strip()
-            if text:
-                return text, None
-        except Exception as e_responses:
-            # Responses API가 안 되는 환경이면 폴백 시도
-            last_err = f"Responses API 실패: {type(e_responses).__name__}: {e_responses}"
+        return None, "Responses API 응답이 비어있습니다."
+    except Exception as e_responses:
+        last_err = f"Responses API 실패: {type(e_responses).__name__}: {e_responses}"
 
-        # 2) Chat Completions 폴백
-        try:
-            cc = client.chat.completions.create(
-                model=MODEL_NAME,
-                messages=[
-                    {"role": "system", "content": _style_system_prompt(coach_style)},
-                    {"role": "user", "content": user_prompt},
-                ],
-                temperature=0.75,
-            )
-            content = cc.choices[0].message.content if cc and cc.choices else None
-            if content:
-                return content.strip(), None
-            return None, "Chat Completions 응답이 비어있습니다."
-        except Exception as e_chat:
-            return None, (locals().get("last_err", "") + "\n" + f"Chat Completions 실패: {type(e_chat).__name__}: {e_chat}").strip()
-
-    except Exception as e:
-        return None, f"OpenAI 클라이언트 생성/호출 실패: {type(e).__name__}: {e}"
+    # 2) Chat Completions fallback (temperature 제거)
+    try:
+        cc = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[
+                {"role": "system", "content": _style_system_prompt(coach_style)},
+                {"role": "user", "content": user_prompt},
+            ],
+            # temperature 미지정(기본값 사용)
+        )
+        content = cc.choices[0].message.content if cc and cc.choices else None
+        if content:
+            return content.strip(), None
+        return None, "Chat Completions 응답이 비어있습니다."
+    except Exception as e_chat:
+        return None, (last_err + "\n" + f"Chat Completions 실패: {type(e_chat).__name__}: {e_chat}").strip()
 
 
 # =============================
@@ -315,15 +302,10 @@ def demo_last_6_days() -> List[Dict[str, Any]]:
         ex = rng.choice([0, 10, 20, 30, 40, 60, 90])
         slots = [s for _, s in TIME_SLOTS if rng.random() < 0.5]
 
-        habits = {}
-        remaining = checked_cnt
-        for _, name in HABITS:
-            # 데모용으로 대략 checked_cnt 개수만 True가 되게
-            if remaining > 0 and rng.random() < 0.7:
-                habits[name] = True
-                remaining -= 1
-            else:
-                habits[name] = False
+        # 정확히 checked_cnt 개수만 True가 되도록 샘플 생성
+        habit_names = [name for _, name in HABITS]
+        trues = set(rng.sample(habit_names, k=checked_cnt))
+        habits = {name: (name in trues) for name in habit_names}
 
         out.append(
             {
@@ -344,8 +326,6 @@ def ensure_state():
         st.session_state.records = demo_last_6_days()
     if "selected_day" not in st.session_state:
         st.session_state.selected_day = date.today()
-    if "last_ping" not in st.session_state:
-        st.session_state.last_ping = None
     if "last_report" not in st.session_state:
         st.session_state.last_report = None
     if "last_openai_error" not in st.session_state:
@@ -376,7 +356,7 @@ def last_7_days_rate_df() -> pd.DataFrame:
     recs = sorted(st.session_state.records, key=lambda x: x.get("date", ""))[-7:]
     rows = []
     for r in recs:
-        habits = r.get("habits") or {}
+        habits = ensure_habits_dict(r.get("habits"))
         checked = calc_checked(habits)
         rows.append({"date": r.get("date"), "rate": pct(checked, len(HABITS))})
     df = pd.DataFrame(rows)
@@ -410,7 +390,6 @@ def badge_from_rate(rate: float) -> str:
 
 
 def cell_stickers(habits: Dict[str, bool]) -> str:
-    # 캘린더 칸에 한눈에: 이모지+✅/▫️ 5개를 한 줄로
     parts = []
     for emo, name in HABITS:
         parts.append(f"{emo}{'✅' if habits.get(name) else '▫️'}")
@@ -436,15 +415,15 @@ with st.sidebar:
 
 
 # =============================
-# Main Layout
+# Main
 # =============================
 st.title(APP_TITLE)
 st.caption("월간 캘린더에서 스티커처럼 습관을 한눈에 확인하고, AI 리포트로 내일을 준비해요 ✨")
 
-# 상단 컨트롤: 월 이동
 today = date.today()
 sel: date = st.session_state.selected_day
 
+# 월/날짜 선택
 c0, c1, c2, c3 = st.columns([1.2, 1, 1, 1.2])
 with c0:
     year = st.number_input("연도", min_value=2020, max_value=2100, value=sel.year, step=1)
@@ -455,23 +434,19 @@ with c2:
         st.session_state.selected_day = today
         sel = today
 with c3:
-    # 날짜 직접 선택(캘린더 클릭 대신 확실하게)
     picked = st.date_input("선택 날짜", value=sel)
     st.session_state.selected_day = picked
     sel = picked
 
 st.divider()
 
-# =============================
-# 캘린더 표시 (직관 강화)
-# =============================
+# ── 캘린더 그리드
 st.subheader("🗓️ 월간 습관 캘린더")
 st.caption("뱃지: 💖(80%↑) ✨(60%↑) 🫧(40%↑) 🌧️(1~39%) ⬜(0%)  ·  스티커: 이모지✅/▫️")
 
 grid = month_grid(int(year), int(month))
 rmap = rec_map()
 
-# 헤더
 headers = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
 hcols = st.columns(7)
 for i, h in enumerate(headers):
@@ -485,47 +460,34 @@ for week in grid:
             continue
 
         rec = rmap.get(iso(d))
-        habits = (rec.get("habits") if rec else None) or {name: False for _, name in HABITS}
+        habits = ensure_habits_dict(rec.get("habits") if rec else None)
         checked = calc_checked(habits)
         rate = pct(checked, len(HABITS))
         badge = badge_from_rate(rate)
-        stickers = cell_stickers(habits)
 
-        # 선택 날짜 강조
-        is_selected = (d == sel)
-        title = f"**{d.day}** {badge}" + ("  ✅" if is_selected else "")
-
+        title = f"**{d.day}** {badge}" + ("  ✅" if d == sel else "")
         cols[i].markdown(title)
-        cols[i].caption(stickers)
+        cols[i].caption(cell_stickers(habits))
 
-        # 클릭 UX: 버튼으로 그 날짜 선택
         if cols[i].button("선택", key=f"pick_{iso(d)}"):
             st.session_state.selected_day = d
             st.rerun()
 
 st.divider()
 
-# =============================
-# 선택 날짜 기록 편집
-# =============================
+# ── 선택 날짜 기록 편집
 st.subheader(f"✍️ 기록 입력/수정 — {sel.isoformat()}")
 
 existing = get_rec(sel)
-default_habits = (existing.get("habits") if existing else None) or {name: False for _, name in HABITS}
+default_habits = ensure_habits_dict(existing.get("habits") if existing else None)
 default_mood = safe_int(existing.get("mood"), 6) if existing else 6
 default_water = safe_int(existing.get("water_ml"), 500) if existing else 500
 default_ex = safe_int(existing.get("exercise_min"), 20) if existing else 20
 default_memo = str(existing.get("memo") or "") if existing else ""
 default_slots = set(existing.get("time_slots") or []) if existing else set()
 
-# 상단: 도시/코치 스타일
-cA, cB = st.columns([1, 1])
-with cA:
-    city = st.selectbox("🏙️ 도시 선택", options=CITIES, index=0, key="city")
-with cB:
-    coach_style = st.radio("🧑‍🏫 코치 스타일", options=COACH_STYLES, horizontal=True, key="coach_style")
+coach_style = st.radio("🧑‍🏫 코치 스타일", options=COACH_STYLES, horizontal=True, key="coach_style")
 
-# 습관 체크박스 2열
 lcol, rcol = st.columns(2)
 habits_done: Dict[str, bool] = {}
 for idx, (emo, name) in enumerate(HABITS):
@@ -534,12 +496,12 @@ for idx, (emo, name) in enumerate(HABITS):
 
 mood = st.slider("😊 기분 점수", 1, 10, default_mood, key=f"mood_{sel}")
 
-cC, cD, cE = st.columns([1, 1, 2])
-with cC:
+cA, cB, cC = st.columns([1, 1, 2])
+with cA:
     water_ml = st.number_input("💧 물 (ml)", min_value=0, max_value=5000, value=default_water, step=100, key=f"water_{sel}")
-with cD:
+with cB:
     exercise_min = st.number_input("🏃 운동 (분)", min_value=0, max_value=600, value=default_ex, step=5, key=f"ex_{sel}")
-with cE:
+with cC:
     memo = st.text_input("📝 메모(주석)", value=default_memo, placeholder="예: 물 2L 목표 / 하체운동 / 일찍 자기", key=f"memo_{sel}")
 
 st.markdown("#### ⏰ 실천 시간대(체크)")
@@ -579,9 +541,7 @@ if save_btn:
 
 st.divider()
 
-# =============================
-# 최근 7일 차트
-# =============================
+# ── 최근 7일 차트
 st.subheader("📈 최근 7일 달성률")
 df7 = last_7_days_rate_df()
 if df7.empty:
@@ -591,36 +551,34 @@ else:
 
 st.divider()
 
-# =============================
-# 리포트 + 핑 카드
-# =============================
+# ── 리포트 + 핑 카드
 st.subheader("🧠 컨디션 리포트 & 오늘의 파트너 핑")
 
-# 핑은 “선택 날짜” 기준으로 고정되게 (날짜마다 파트너가 다르게)
 ping = get_fairy_ping(seed_key=f"{iso(sel)}-ping")
 stats_df = pd.DataFrame({"stat": list(ping["stats"].keys()), "value": list(ping["stats"].values())})
 
-# 리포트 생성 버튼
 gen = st.button("컨디션 리포트 생성", use_container_width=True)
 
 if gen:
-    user_prompt = build_user_prompt(
-        city=city,
-        mood=int(mood),
-        checked_habits=[k for k, v in habits_done.items() if v],
-        unchecked_habits=[k for k, v in habits_done.items() if not v],
-        water_ml=int(water_ml),
-        exercise_min=int(exercise_min),
-        memo=memo,
-        time_slots_done=[s for s, v in slot_done.items() if v],
-        ping=ping,
-    )
-    with st.spinner("AI가 리포트를 작성하는 중..."):
-        report, err = generate_report(openai_api_key, coach_style, user_prompt)
-    st.session_state.last_report = report
-    st.session_state.last_openai_error = err
+    if not clean(openai_api_key):
+        st.session_state.last_report = None
+        st.session_state.last_openai_error = "OpenAI API Key가 비어있습니다. 사이드바에 입력해 주세요."
+    else:
+        user_prompt = build_user_prompt(
+            mood=int(mood),
+            checked_habits=[k for k, v in habits_done.items() if v],
+            unchecked_habits=[k for k, v in habits_done.items() if not v],
+            water_ml=int(water_ml),
+            exercise_min=int(exercise_min),
+            memo=memo,
+            time_slots_done=[s for s, v in slot_done.items() if v],
+            ping=ping,
+        )
+        with st.spinner("AI가 리포트를 작성하는 중..."):
+            report, err = generate_report(openai_api_key, coach_style, user_prompt)
+        st.session_state.last_report = report
+        st.session_state.last_openai_error = err
 
-# 출력 레이아웃
 colL, colR = st.columns([1.2, 1])
 
 with colR:
@@ -628,7 +586,7 @@ with colR:
     st.markdown(f"**{ping['emoji']} {ping['name']}**  ·  *{ping['element']}*")
     st.caption(ping["phrase"])
 
-    # 스탯 바 차트 (빨간색)
+    # 빨간색 바 차트
     if alt is not None:
         chart = (
             alt.Chart(stats_df)
@@ -647,7 +605,6 @@ with colR:
     st.markdown("### 🔗 공유용 텍스트")
     share = {
         "date": iso(sel),
-        "city": city,
         "coach_style": coach_style,
         "mood": int(mood),
         "habits": habits_done,
@@ -679,14 +636,13 @@ with colL:
 **필요한 것**
 - OpenAI API Key (리포트 생성용)
 
-**리포트가 안 될 때(중요)**
-- Streamlit Cloud라면 Secrets에 `OPENAI_API_KEY`를 저장했는지 확인
-- 로컬이면 `pip install openai` 설치 여부 확인
+**리포트가 안 될 때**
+- 로컬: `pip install openai` 설치 확인
+- Streamlit Cloud: `requirements.txt`에 `openai` 포함 확인
 - 키가 유효하지 않으면(401) 리포트 생성 실패
 
 **참고**
-- 이 앱은 저작권 이슈를 피하기 위해 ‘티니핑’ 공식 캐릭터/로고/이미지를 사용하지 않고,
-  오리지널 ‘핑 카드’로 분위기만 살렸습니다.
+- 이 앱은 ‘티니핑 느낌’의 오리지널 요정 컨셉이며 공식 캐릭터/로고/이미지는 포함하지 않습니다.
 """
         )
 
