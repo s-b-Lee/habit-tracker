@@ -34,18 +34,32 @@ _init_state()
 # API Helpers
 # -----------------------------
 def get_weather(city: str, api_key: str) -> Optional[Dict]:
-    """OpenWeatherMap: 한국어, 섭씨, timeout=10 / 실패 시 None"""
+    """
+    OpenWeatherMap: 한국어, 섭씨, timeout=10 / 실패 시 None
+
+    ✅ (요구사항 2) 도시 인식률 개선:
+    - 도시명에 국가코드 KR을 붙여서 요청: f"{city},KR"
+    - Jeju는 OpenWeatherMap에서 'Jeju City'로 더 잘 잡히는 경우가 많아 예외 처리
+    """
     if not api_key:
         return None
+
+    # OpenWeatherMap 도시명 보정
+    city_q = city.strip()
+    if city_q.lower() == "jeju":
+        city_q = "Jeju City"
+    city_q = f"{city_q},KR"  # ✅ 핵심 변경점
+
     try:
         url = "https://api.openweathermap.org/data/2.5/weather"
-        params = {"q": city, "appid": api_key, "units": "metric", "lang": "kr"}
+        params = {"q": city_q, "appid": api_key, "units": "metric", "lang": "kr"}
         r = requests.get(url, params=params, timeout=10)
         if r.status_code != 200:
             return None
         j = r.json()
         return {
-            "city": city,
+            "city": city,  # UI에는 원래 선택한 도시명을 표시
+            "query": city_q,  # 디버깅용(원하면 UI에 표시 가능)
             "temp": j.get("main", {}).get("temp"),
             "feels_like": j.get("main", {}).get("feels_like"),
             "humidity": j.get("main", {}).get("humidity"),
@@ -96,7 +110,7 @@ def generate_report(
 ) -> Tuple[Optional[str], Optional[str]]:
     """
     OpenAI 리포트 생성 (model: gpt-5-mini)
-    ✅ FIX: gpt-5-mini에서 temperature 조절이 불가하므로 temperature 필드를 제거(기본값=1만 사용)
+    - gpt-5-mini는 temperature 조절이 불가할 수 있어 temperature 필드를 보내지 않음(기본=1)
     실패 시 (None, error_message)
     """
     if not openai_key:
@@ -154,7 +168,6 @@ def generate_report(
         headers = {"Authorization": f"Bearer {openai_key}", "Content-Type": "application/json"}
         payload = {
             "model": "gpt-5-mini",
-            # ✅ temperature 제거 (gpt-5-mini는 기본값(1)만 지원)
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
@@ -300,11 +313,7 @@ for d in window_dates:
     d_str = d.isoformat()
     r = rec_map.get(d_str)
     chart_rows.append(
-        {
-            "date": d,
-            "달성률": float((r or {}).get("rate", 0.0)),
-            "달성개수": int((r or {}).get("checked", 0)),
-        }
+        {"date": d, "달성률": float((r or {}).get("rate", 0.0)), "달성개수": int((r or {}).get("checked", 0))}
     )
 
 st.subheader("📈 최근 7일 달성률")
@@ -430,6 +439,8 @@ with st.expander("📌 API 안내 / 사용 방법"):
 **2) OpenWeatherMap API**
 - 사이드바에 OpenWeatherMap API Key를 입력하면, 선택 도시의 현재 날씨를 가져옵니다.
 - 한국어(`lang=kr`), 섭씨(`units=metric`)
+- ✅ 도시 인식률 개선을 위해 요청 시 `도시명,KR` 형태로 호출합니다.
+  - 예: `Seoul,KR`, `Busan,KR`, `Jeju City,KR`
 
 **3) Dog API (Dog CEO)**
 - 별도 키 없이 동작합니다.
