@@ -1,10 +1,9 @@
 # app.py
 import datetime as dt
-import json
-from typing import Dict, Optional, Tuple, List
+from typing import Dict, Optional, Tuple
 
 import altair as alt
-import pandas as pd  # ✅ 차트 오류 해결을 위해 추가
+import pandas as pd
 import requests
 import streamlit as st
 
@@ -12,7 +11,6 @@ import streamlit as st
 # Page config
 # -----------------------------
 st.set_page_config(page_title="AI 습관 트래커", page_icon="📊", layout="wide")
-
 
 # -----------------------------
 # Session State
@@ -32,25 +30,16 @@ def _init_state():
 
 _init_state()
 
-
 # -----------------------------
 # API Helpers
 # -----------------------------
 def get_weather(city: str, api_key: str) -> Optional[Dict]:
-    """
-    OpenWeatherMap: 한국어, 섭씨, timeout=10
-    실패 시 None
-    """
+    """OpenWeatherMap: 한국어, 섭씨, timeout=10 / 실패 시 None"""
     if not api_key:
         return None
     try:
         url = "https://api.openweathermap.org/data/2.5/weather"
-        params = {
-            "q": city,
-            "appid": api_key,
-            "units": "metric",
-            "lang": "kr",
-        }
+        params = {"q": city, "appid": api_key, "units": "metric", "lang": "kr"}
         r = requests.get(url, params=params, timeout=10)
         if r.status_code != 200:
             return None
@@ -68,26 +57,19 @@ def get_weather(city: str, api_key: str) -> Optional[Dict]:
 
 
 def _breed_from_dog_url(url: str) -> str:
-    """
-    Dog CEO URL 예시:
-    https://images.dog.ceo/breeds/hound-afghan/n02088094_1003.jpg
-    """
+    """Dog CEO URL에서 품종 폴더명을 추출(추정)"""
     try:
         if "/breeds/" not in url:
             return "알 수 없음"
         after = url.split("/breeds/", 1)[1]
-        breed_folder = after.split("/", 1)[0]  # hound-afghan
-        breed_folder = breed_folder.replace("-", " ")
-        return breed_folder.strip() or "알 수 없음"
+        breed_folder = after.split("/", 1)[0]
+        return breed_folder.replace("-", " ").strip() or "알 수 없음"
     except Exception:
         return "알 수 없음"
 
 
 def get_dog_image() -> Optional[Dict]:
-    """
-    Dog CEO: 랜덤 강아지 사진 URL + 품종, timeout=10
-    실패 시 None
-    """
+    """Dog CEO: 랜덤 강아지 사진 URL+품종(추정), timeout=10 / 실패 시 None"""
     try:
         url = "https://dog.ceo/api/breeds/image/random"
         r = requests.get(url, timeout=10)
@@ -113,8 +95,8 @@ def generate_report(
     dog: Optional[Dict],
 ) -> Tuple[Optional[str], Optional[str]]:
     """
-    OpenAI에 습관+기분+날씨+강아지 품종을 전달해 코치 리포트 생성
-    모델: gpt-5-mini
+    OpenAI 리포트 생성 (model: gpt-5-mini)
+    ✅ FIX: gpt-5-mini에서 temperature 조절이 불가하므로 temperature 필드를 제거(기본값=1만 사용)
     실패 시 (None, error_message)
     """
     if not openai_key:
@@ -127,7 +109,7 @@ def generate_report(
         ),
         "따뜻한 멘토": (
             "너는 따뜻한 멘토다. 사용자를 다정하게 격려하되 과장하지 않는다. "
-            "실행 가능한 다음 خطوة(스텝)를 부드럽게 제시해라."
+            "실행 가능한 다음 스텝을 부드럽게 제시해라."
         ),
         "게임 마스터": (
             "너는 RPG 게임 마스터다. 오늘을 퀘스트/경험치/레벨업 관점으로 재미있게 묘사한다. "
@@ -135,9 +117,7 @@ def generate_report(
         ),
     }.get(coach_style, "너는 실용적인 습관 코치다. 짧고 명확하게 답해라.")
 
-    habit_lines = []
-    for name, done in habits.items():
-        habit_lines.append(f"- {name}: {'완료' if done else '미완료'}")
+    habit_lines = [f"- {name}: {'완료' if done else '미완료'}" for name, done in habits.items()]
     habits_text = "\n".join(habit_lines)
 
     weather_text = "날씨 정보 없음"
@@ -174,7 +154,7 @@ def generate_report(
         headers = {"Authorization": f"Bearer {openai_key}", "Content-Type": "application/json"}
         payload = {
             "model": "gpt-5-mini",
-            "temperature": 0.7,
+            # ✅ temperature 제거 (gpt-5-mini는 기본값(1)만 지원)
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
@@ -205,9 +185,7 @@ def generate_report(
 def _seed_demo_records_if_needed():
     if st.session_state["records"]:
         return
-
     today = dt.date.today()
-    demo = []
     sample = [
         (today - dt.timedelta(days=6), 3, 60.0, 6),
         (today - dt.timedelta(days=5), 2, 40.0, 5),
@@ -216,10 +194,9 @@ def _seed_demo_records_if_needed():
         (today - dt.timedelta(days=2), 5, 100.0, 8),
         (today - dt.timedelta(days=1), 1, 20.0, 4),
     ]
-    for d, checked, rate, mood in sample:
-        demo.append({"date": d.isoformat(), "checked": checked, "rate": rate, "mood": mood})
-
-    st.session_state["records"] = demo
+    st.session_state["records"] = [
+        {"date": d.isoformat(), "checked": checked, "rate": rate, "mood": mood} for d, checked, rate, mood in sample
+    ]
 
 
 def _upsert_today_record(checked_count: int, rate: float, mood: int):
@@ -235,7 +212,6 @@ def _upsert_today_record(checked_count: int, rate: float, mood: int):
 
 
 _seed_demo_records_if_needed()
-
 
 # -----------------------------
 # Sidebar
@@ -275,22 +251,15 @@ coach_style = st.radio("코치 스타일", ["스파르타 코치", "따뜻한 �
 
 st.subheader("✅ 습관 체크인")
 
-habit_defs = [
-    ("🌅 기상 미션", "wake"),
-    ("💧 물 마시기", "water"),
-    ("📚 공부/독서", "study"),
-    ("🏃 운동하기", "workout"),
-    ("😴 수면", "sleep"),
-]
-
+# 체크박스 5개를 2열 배치 + 이모지
 col1, col2 = st.columns(2)
 with col1:
-    h_wake = st.checkbox(habit_defs[0][0], key="habit_wake")
-    h_water = st.checkbox(habit_defs[1][0], key="habit_water")
-    h_study = st.checkbox(habit_defs[2][0], key="habit_study")
+    h_wake = st.checkbox("🌅 기상 미션", key="habit_wake")
+    h_water = st.checkbox("💧 물 마시기", key="habit_water")
+    h_study = st.checkbox("📚 공부/독서", key="habit_study")
 with col2:
-    h_workout = st.checkbox(habit_defs[3][0], key="habit_workout")
-    h_sleep = st.checkbox(habit_defs[4][0], key="habit_sleep")
+    h_workout = st.checkbox("🏃 운동하기", key="habit_workout")
+    h_sleep = st.checkbox("😴 수면", key="habit_sleep")
 
 mood = st.slider("기분 점수", min_value=1, max_value=10, value=6, step=1)
 
@@ -305,13 +274,12 @@ habits = {
 checked_count = sum(1 for v in habits.values() if v)
 rate = round((checked_count / 5) * 100.0, 1)
 
+# 오늘 데이터 자동 저장
 _upsert_today_record(checked_count=checked_count, rate=rate, mood=mood)
 
 st.divider()
 
-# -----------------------------
 # Metrics
-# -----------------------------
 m1, m2, m3 = st.columns(3)
 with m1:
     st.metric("달성률", f"{rate:.1f}%")
@@ -321,8 +289,7 @@ with m3:
     st.metric("기분", f"{mood}/10")
 
 # -----------------------------
-# 7-day bar chart (6 demo + today)
-# ✅ FIX: DataFrame + datetime + date:T 로 변경 (Altair v6 호환)
+# 7-day bar chart (Altair v6 safe)
 # -----------------------------
 today = dt.date.today()
 window_dates = [today - dt.timedelta(days=i) for i in range(6, -1, -1)]
@@ -334,7 +301,7 @@ for d in window_dates:
     r = rec_map.get(d_str)
     chart_rows.append(
         {
-            "date": d,  # ✅ date 객체로 저장
+            "date": d,
             "달성률": float((r or {}).get("rate", 0.0)),
             "달성개수": int((r or {}).get("checked", 0)),
         }
@@ -343,7 +310,7 @@ for d in window_dates:
 st.subheader("📈 최근 7일 달성률")
 
 df_chart = pd.DataFrame(chart_rows)
-df_chart["date"] = pd.to_datetime(df_chart["date"])  # ✅ temporal로 확실히
+df_chart["date"] = pd.to_datetime(df_chart["date"])
 
 chart = (
     alt.Chart(df_chart)
@@ -359,7 +326,6 @@ chart = (
     )
     .properties(height=260)
 )
-
 st.altair_chart(chart, use_container_width=True)
 
 st.divider()
@@ -413,7 +379,7 @@ if btn:
 
         st.session_state["share_text"] = "\n".join(share)
 
-# Render weather + dog cards (2 columns)
+# Weather + Dog cards
 c_left, c_right = st.columns(2)
 
 with c_left:
@@ -452,15 +418,14 @@ if st.session_state.get("share_text"):
 else:
     st.caption("리포트를 생성하면 공유용 텍스트가 만들어집니다.")
 
-# -----------------------------
 # API 안내
-# -----------------------------
 with st.expander("📌 API 안내 / 사용 방법"):
     st.markdown(
         """
 **1) OpenAI API**
 - 사이드바에 OpenAI API Key를 입력하면, '컨디션 리포트 생성' 시 AI 코칭 리포트를 생성합니다.
 - 모델: `gpt-5-mini`
+- 참고: 일부 모델은 `temperature` 값을 지원하지 않아(기본값 1만 허용) 이 앱은 temperature를 보내지 않습니다.
 
 **2) OpenWeatherMap API**
 - 사이드바에 OpenWeatherMap API Key를 입력하면, 선택 도시의 현재 날씨를 가져옵니다.
@@ -471,6 +436,7 @@ with st.expander("📌 API 안내 / 사용 방법"):
 - 습관 리포트 생성 시 랜덤 강아지 이미지를 가져와 보상 카드로 보여줍니다.
 
 **네트워크/권한**
-- 모든 외부 요청은 `timeout=10`(OpenAI는 30초)으로 설정되어 있으며, 실패하면 None 처리 또는 오류 메시지를 표시합니다.
+- 외부 요청은 Weather/Dog `timeout=10`, OpenAI `timeout=30`입니다.
+- 실패하면 None 처리 또는 오류 메시지를 표시합니다.
 """
     )
