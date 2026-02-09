@@ -1,50 +1,26 @@
 # app.py
 # ─────────────────────────────────────────────────────────────
-# AI 습관 트래커 (마법 요정 에디션)
-# - "티니핑 감성"을 살린 오리지널(창작) 요정/핑 카드 컨셉
-# - 저작권/상표 이슈를 피하기 위해 공식 캐릭터/로고/이미지/고유명사 사용 없음
+# AI 습관 트래커 (마법 요정 에디션) - 개선판
 #
-# ✅ 요구 기능 포함
-# [기본 설정]
-# - 페이지 제목: "AI 습관 트래커 (포켓몬)" -> (요청) "AI 습관 트래커 (마법 요정)"로 변경
-# - 아이콘: 🎮
-# - 사이드바: OpenAI API Key 입력칸
+# ✅ 수정 사항
+# 1) 컨디션 리포트 생성 오류 수정
+#    - OpenAI Responses API 우선 사용
+#    - 실패 시 Chat Completions로 폴백
+#    - 실패 원인(에러 메시지) UI에 표시
 #
-# [습관 체크인 UI]
-# - 체크박스 5개 2열 배치 + 이모지
-# - 기분 슬라이더 (1~10)
-# - 도시 선택 10개 + 코치 스타일 라디오
-# - 추가: 물(ml), 운동(분), 메모(주석)
-# - 추가: 시간대별(아침/점심/저녁/밤) 체크(시각화용)
+# 2) 습관 트래커 캘린더 UI를 더 직관적으로
+#    - 월간 캘린더 7열 그리드
+#    - 날짜 셀에 습관 스티커(이모지+✅/▫️) 표시
+#    - 날짜 선택 → 해당 날짜 기록 편집/저장
 #
-# [달성률 + 차트]
-# - 달성률(%) 계산
-# - st.metric 3개: 달성률, 달성 습관, 기분
-# - 데모용 6일 + 오늘 데이터로 7일 바 차트
-# - session_state로 기록 저장
-#
-# [API 연동]
-# - 날씨 기능 제외(요청)
-# - get_fairy_ping(): 랜덤 “핑(요정)” 카드(창작) 생성
-#   - 이름/속성/설명/스탯(행복,집중,활력,휴식,용기,반짝)
-#
-# [AI 코치 리포트]
-# - generate_report: 습관+기분+도시+핑 카드 정보를 OpenAI에 전달
-# - 코치 스타일별 시스템 프롬프트 (스파르타/멘토/게임마스터)
-# - 출력: 컨디션 등급(S~D), 습관 분석, 내일 미션, 오늘의 파트너 핑(스탯 활용 응원)
-# - 모델: gpt-5-mini
-#
-# [결과 표시]
-# - '컨디션 리포트 생성' 버튼
-# - 2열: (왼쪽) 기록 요약/시각화, (오른쪽) 핑 카드 + 스탯 바 차트(빨간색 요구 → 붉은 계열)
-# - AI 리포트
-# - 공유용 텍스트 (st.code)
-# - 하단 API 안내 (expander)
-#
-# [추가 요구]
-# 1) 캘린더 형태 기록 보기
-# 2) 운동/물 등 주석(메모) 달기
-# 3) 성공률 시각화: 시간대별/습관종류별 이모지(이미지 느낌)로 표시
+# ✅ 포함 기능
+# - 사이드바: OpenAI API Key 입력 (secrets 우선)
+# - 체크인: 5습관(2열), 기분(1~10), 도시(10), 코치스타일(3),
+#          물(ml), 운동(분), 메모, 시간대 체크
+# - 7일 달성률 바차트
+# - “오늘의 파트너 핑(오리지널 카드)” + 스탯 바차트(빨간색)
+# - 공유용 JSON 텍스트
+# - API 안내 expander
 # ─────────────────────────────────────────────────────────────
 
 from __future__ import annotations
@@ -52,8 +28,7 @@ from __future__ import annotations
 import calendar
 import json
 import random
-from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -116,62 +91,37 @@ def clean(s: str) -> str:
     return (s or "").strip()
 
 
-def today_iso() -> str:
-    return date.today().isoformat()
-
-
-def clamp_int(x: Any, lo: int, hi: int, default: int) -> int:
-    try:
-        v = int(x)
-        return max(lo, min(hi, v))
-    except Exception:
-        return default
-
-
-def iso_to_date(s: str) -> date:
-    return date.fromisoformat(s)
-
-
-def safe_float(x: Any, default: float = 0.0) -> float:
-    try:
-        return float(x)
-    except Exception:
-        return default
+def iso(d: date) -> str:
+    return d.isoformat()
 
 
 def pct(n: int, d: int) -> float:
-    if d <= 0:
-        return 0.0
-    return round(n / d * 100, 1)
+    return round((n / d * 100) if d else 0.0, 1)
+
+
+def safe_int(x: Any, default: int) -> int:
+    try:
+        return int(x)
+    except Exception:
+        return default
+
+
+def day_key(d: date) -> str:
+    return d.isoformat()
+
+
+def calc_checked(habits: Dict[str, bool]) -> int:
+    return sum(1 for _, name in HABITS if habits.get(name))
 
 
 # =============================
-# 오리지널 “핑(요정) 카드” 생성
+# 오리지널 “핑(요정) 카드”
 # =============================
 PING_NAMES = [
-    "반짝핑",
-    "용기핑",
-    "집중핑",
-    "다정핑",
-    "수면핑",
-    "정리핑",
-    "활력핑",
-    "성장핑",
-    "미소핑",
-    "차분핑",
-    "포근핑",
-    "신나핑",
+    "반짝핑", "용기핑", "집중핑", "다정핑", "수면핑", "정리핑",
+    "활력핑", "성장핑", "미소핑", "차분핑", "포근핑", "신나핑"
 ]
-
-PING_ELEMENTS = [
-    ("💖", "하트"),
-    ("✨", "별빛"),
-    ("🌿", "초록"),
-    ("🌈", "무지개"),
-    ("🫧", "버블"),
-    ("🎀", "리본"),
-]
-
+PING_ELEMENTS = [("💖", "하트"), ("✨", "별빛"), ("🌿", "초록"), ("🌈", "무지개"), ("🫧", "버블"), ("🎀", "리본")]
 PING_PHRASES = [
     "오늘은 작은 체크 하나가 마법이 될 거야!",
     "괜찮아, 천천히 해도 돼. 그래도 계속!",
@@ -181,17 +131,11 @@ PING_PHRASES = [
 ]
 
 
-def get_fairy_ping(seed_key: Optional[str] = None) -> Dict[str, Any]:
-    """
-    창작 핑 카드 생성 (API 호출 없이)
-    - seed_key가 있으면 같은 날/같은 입력에서 비슷하게 나오도록 결정성 부여 가능
-    """
-    rng = random.Random(seed_key or f"{today_iso()}-ping")
+def get_fairy_ping(seed_key: str) -> Dict[str, Any]:
+    rng = random.Random(seed_key)
     name = rng.choice(PING_NAMES)
     emo, element = rng.choice(PING_ELEMENTS)
     phrase = rng.choice(PING_PHRASES)
-
-    # 스탯 (0~100)
     stats = {
         "행복💖": rng.randint(40, 95),
         "집중🌟": rng.randint(30, 95),
@@ -200,21 +144,15 @@ def get_fairy_ping(seed_key: Optional[str] = None) -> Dict[str, Any]:
         "용기🛡️": rng.randint(30, 95),
         "반짝✨": rng.randint(40, 99),
     }
-    return {
-        "name": name,
-        "element": element,
-        "emoji": emo,
-        "phrase": phrase,
-        "stats": stats,
-    }
+    return {"name": name, "emoji": emo, "element": element, "phrase": phrase, "stats": stats}
 
 
 # =============================
-# OpenAI 리포트
+# OpenAI 리포트 (오류 수정/안정화)
 # =============================
 def _get_openai_client(api_key: str) -> "OpenAI":
     if OpenAI is None:
-        raise RuntimeError("openai 패키지가 설치되어 있지 않습니다. `pip install openai` 해주세요.")
+        raise RuntimeError("openai 패키지가 없습니다. requirements.txt에 openai를 추가하고 재실행하세요.")
     return OpenAI(api_key=clean(api_key))
 
 
@@ -225,17 +163,15 @@ def _style_system_prompt(style: str) -> str:
         "출력 형식을 반드시 지켜라."
     )
     if style == "스파르타 코치":
-        return base + " 톤은 엄격하고 직설적이며 짧다. 변명은 끊고 실행 지침을 준다. 모욕 금지."
+        return base + " 톤은 엄격하고 직설적이며 짧다. 변명은 끊고 실행 지침만 준다. 모욕 금지."
     if style == "따뜻한 멘토":
         return base + " 톤은 따뜻하고 공감적. 작은 성취를 칭찬하고 부담을 낮춘다."
     return base + " 톤은 RPG/게임마스터처럼. 퀘스트/보상/레벨업 표현으로 재미있게."
 
 
-def generate_report(
-    openai_api_key: str,
-    coach_style: str,
-    mood: int,
+def build_user_prompt(
     city: str,
+    mood: int,
     checked_habits: List[str],
     unchecked_habits: List[str],
     water_ml: int,
@@ -243,18 +179,14 @@ def generate_report(
     memo: str,
     time_slots_done: List[str],
     ping: Dict[str, Any],
-) -> Optional[str]:
-    openai_api_key = clean(openai_api_key)
-    if not openai_api_key:
-        return None
-
+) -> str:
     ping_text = (
         f"{ping.get('emoji')} {ping.get('name')} ({ping.get('element')})\n"
         f"한마디: {ping.get('phrase')}\n"
         f"스탯: {ping.get('stats')}"
     )
 
-    user_prompt = f"""
+    return f"""
 아래 데이터를 기반으로 리포트를 작성해줘.
 
 [도시]
@@ -299,66 +231,109 @@ def generate_report(
 
 ## 오늘의 파트너 핑
 - 핑: (이름/속성)
-- 스탯 활용 응원: (스탯 2~3개 끌어와서 오늘의 컨디션에 맞게 응원)
+- 스탯 활용 응원: (스탯 2~3개 끌어와서 응원)
 - 한 마디 주문: (짧게 1문장)
 """.strip()
 
-    try:
-        client = _get_openai_client(openai_api_key)
-        resp = client.responses.create(
-            model=MODEL_NAME,
-            input=[
-                {"role": "system", "content": [{"type": "text", "text": _style_system_prompt(coach_style)}]},
-                {"role": "user", "content": [{"type": "text", "text": user_prompt}]},
-            ],
-            temperature=0.75,
-        )
-        if hasattr(resp, "output_text") and resp.output_text:
-            return str(resp.output_text).strip()
 
-        # fallback
-        out_texts: List[str] = []
-        for item in getattr(resp, "output", []) or []:
-            for c in getattr(item, "content", []) or []:
-                if getattr(c, "type", None) == "output_text":
-                    out_texts.append(getattr(c, "text", ""))
-        text = "\n".join([t for t in out_texts if t]).strip()
-        return text if text else None
-    except Exception:
-        return None
+def generate_report(
+    api_key: str,
+    coach_style: str,
+    user_prompt: str,
+) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Returns: (report_text_or_None, error_message_or_None)
+    - Responses API 우선
+    - 실패 시 Chat Completions 폴백
+    """
+    api_key = clean(api_key)
+    if not api_key:
+        return None, "OpenAI API Key가 비어있습니다."
+
+    try:
+        client = _get_openai_client(api_key)
+
+        # 1) Responses API
+        try:
+            resp = client.responses.create(
+                model=MODEL_NAME,
+                input=[
+                    {"role": "system", "content": [{"type": "text", "text": _style_system_prompt(coach_style)}]},
+                    {"role": "user", "content": [{"type": "text", "text": user_prompt}]},
+                ],
+                temperature=0.75,
+            )
+            if getattr(resp, "output_text", None):
+                return str(resp.output_text).strip(), None
+
+            # fallback extraction
+            out_texts: List[str] = []
+            for item in getattr(resp, "output", []) or []:
+                for c in getattr(item, "content", []) or []:
+                    if getattr(c, "type", None) == "output_text":
+                        out_texts.append(getattr(c, "text", ""))
+            text = "\n".join([t for t in out_texts if t]).strip()
+            if text:
+                return text, None
+        except Exception as e_responses:
+            # Responses API가 안 되는 환경이면 폴백 시도
+            last_err = f"Responses API 실패: {type(e_responses).__name__}: {e_responses}"
+
+        # 2) Chat Completions 폴백
+        try:
+            cc = client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=[
+                    {"role": "system", "content": _style_system_prompt(coach_style)},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.75,
+            )
+            content = cc.choices[0].message.content if cc and cc.choices else None
+            if content:
+                return content.strip(), None
+            return None, "Chat Completions 응답이 비어있습니다."
+        except Exception as e_chat:
+            return None, (locals().get("last_err", "") + "\n" + f"Chat Completions 실패: {type(e_chat).__name__}: {e_chat}").strip()
+
+    except Exception as e:
+        return None, f"OpenAI 클라이언트 생성/호출 실패: {type(e).__name__}: {e}"
 
 
 # =============================
-# 기록(세션) 구조
+# 기록 저장 (session_state)
 # =============================
 def demo_last_6_days() -> List[Dict[str, Any]]:
     rng = random.Random(20260209)
     today = date.today()
-    out: List[Dict[str, Any]] = []
+    out = []
     for i in range(6, 0, -1):
         d = today - timedelta(days=i)
-        # 습관 체크 수
         checked_cnt = rng.randint(1, 5)
-        # 기분
         mood = rng.randint(3, 9)
-        # 물/운동
         water = rng.choice([0, 300, 500, 800, 1200, 1500, 2000])
         ex = rng.choice([0, 10, 20, 30, 40, 60, 90])
-
-        # 시간대 체크(랜덤)
         slots = [s for _, s in TIME_SLOTS if rng.random() < 0.5]
+
+        habits = {}
+        remaining = checked_cnt
+        for _, name in HABITS:
+            # 데모용으로 대략 checked_cnt 개수만 True가 되게
+            if remaining > 0 and rng.random() < 0.7:
+                habits[name] = True
+                remaining -= 1
+            else:
+                habits[name] = False
 
         out.append(
             {
-                "date": d.isoformat(),
-                "habit_checked": checked_cnt,
+                "date": iso(d),
                 "mood": mood,
                 "water_ml": water,
                 "exercise_min": ex,
                 "memo": "",
                 "time_slots": slots,
-                # 습관별 완료 여부(시각화/캘린더용)
-                "habits": {name: (rng.random() < (checked_cnt / 5)) for _, name in HABITS},
+                "habits": habits,
             }
         )
     return out
@@ -367,119 +342,88 @@ def demo_last_6_days() -> List[Dict[str, Any]]:
 def ensure_state():
     if "records" not in st.session_state:
         st.session_state.records = demo_last_6_days()
-    if "last_report" not in st.session_state:
-        st.session_state.last_report = None
+    if "selected_day" not in st.session_state:
+        st.session_state.selected_day = date.today()
     if "last_ping" not in st.session_state:
         st.session_state.last_ping = None
+    if "last_report" not in st.session_state:
+        st.session_state.last_report = None
+    if "last_openai_error" not in st.session_state:
+        st.session_state.last_openai_error = None
 
 
-def upsert_today_record(rec: Dict[str, Any]):
+def rec_map() -> Dict[str, Dict[str, Any]]:
+    return {r["date"]: r for r in st.session_state.records if r.get("date")}
+
+
+def get_rec(d: date) -> Optional[Dict[str, Any]]:
+    return rec_map().get(iso(d))
+
+
+def upsert_rec(rec: Dict[str, Any]):
     records: List[Dict[str, Any]] = st.session_state.records
-    t = today_iso()
+    key = rec["date"]
     for i, r in enumerate(records):
-        if r.get("date") == t:
+        if r.get("date") == key:
             records[i] = rec
             break
     else:
         records.append(rec)
-    records_sorted = sorted(records, key=lambda x: x.get("date", ""))
-    st.session_state.records = records_sorted[-120:]  # 넉넉히 유지(캘린더용)
-
-
-def get_record_map() -> Dict[str, Dict[str, Any]]:
-    return {r["date"]: r for r in st.session_state.records if r.get("date")}
-
-
-def compute_today_achievement(habits_done: Dict[str, bool]) -> Tuple[int, float]:
-    checked_count = sum(1 for v in habits_done.values() if v)
-    rate = pct(checked_count, len(HABITS))
-    return checked_count, rate
+    st.session_state.records = sorted(records, key=lambda x: x.get("date", ""))[-365:]
 
 
 def last_7_days_rate_df() -> pd.DataFrame:
-    """
-    6일 데모 + 오늘 기록 기반으로 7일 달성률 바 차트용 DF
-    """
     recs = sorted(st.session_state.records, key=lambda x: x.get("date", ""))[-7:]
     rows = []
     for r in recs:
         habits = r.get("habits") or {}
-        checked = sum(1 for _, name in HABITS if habits.get(name))
+        checked = calc_checked(habits)
         rows.append({"date": r.get("date"), "rate": pct(checked, len(HABITS))})
     df = pd.DataFrame(rows)
-    if not df.empty:
-        df = df.sort_values("date")
-    return df
+    return df.sort_values("date") if not df.empty else df
 
 
 # =============================
-# 캘린더 렌더링
+# 캘린더 UI helpers
 # =============================
-def month_calendar_dates(year: int, month: int) -> List[List[Optional[date]]]:
-    cal = calendar.Calendar(firstweekday=6)  # 일요일 시작
-    weeks = []
+def month_grid(year: int, month: int) -> List[List[Optional[date]]]:
+    cal = calendar.Calendar(firstweekday=6)  # Sunday
+    weeks: List[List[Optional[date]]] = []
     for week in cal.monthdatescalendar(year, month):
-        row = []
+        row: List[Optional[date]] = []
         for d in week:
-            if d.month != month:
-                row.append(None)
-            else:
-                row.append(d)
+            row.append(d if d.month == month else None)
         weeks.append(row)
     return weeks
 
 
-def day_badge(rec: Optional[Dict[str, Any]]) -> str:
-    """
-    캘린더 셀에 표시할 간단 뱃지(이모지):
-    - 달성률에 따라 별/하트 느낌으로
-    """
-    if not rec:
-        return "⬜"
-    habits = rec.get("habits") or {}
-    checked = sum(1 for _, name in HABITS if habits.get(name))
-    rate = checked / len(HABITS) if len(HABITS) else 0
-    if rate >= 0.8:
+def badge_from_rate(rate: float) -> str:
+    if rate >= 80:
         return "💖"
-    if rate >= 0.6:
+    if rate >= 60:
         return "✨"
-    if rate >= 0.4:
+    if rate >= 40:
         return "🫧"
     if rate > 0:
         return "🌧️"
     return "⬜"
 
 
-# =============================
-# 시각화: 시간대별/습관별 성공률(이모지)
-# =============================
-def slot_success_emoji(p: float) -> str:
-    """
-    성공률 p(0~1) -> 이모지 게이지
-    """
-    if p >= 0.85:
-        return "🌟🌟🌟🌟🌟"
-    if p >= 0.7:
-        return "🌟🌟🌟🌟▫️"
-    if p >= 0.55:
-        return "🌟🌟🌟▫️▫️"
-    if p >= 0.35:
-        return "🌟🌟▫️▫️▫️"
-    if p > 0:
-        return "🌟▫️▫️▫️▫️"
-    return "▫️▫️▫️▫️▫️"
-
-
-def habit_success_icon(done: bool, emoji: str) -> str:
-    return f"{emoji}✅" if done else f"{emoji}▫️"
+def cell_stickers(habits: Dict[str, bool]) -> str:
+    # 캘린더 칸에 한눈에: 이모지+✅/▫️ 5개를 한 줄로
+    parts = []
+    for emo, name in HABITS:
+        parts.append(f"{emo}{'✅' if habits.get(name) else '▫️'}")
+    return " ".join(parts)
 
 
 # =============================
 # Sidebar
 # =============================
+ensure_state()
+
 with st.sidebar:
     st.header("🔑 OpenAI API Key")
-    # (배포 시) secrets 우선값
     default_openai = ""
     try:
         default_openai = str(st.secrets.get("OPENAI_API_KEY", ""))  # type: ignore
@@ -488,353 +432,262 @@ with st.sidebar:
     openai_api_key = st.text_input("OpenAI API Key", value=default_openai, type="password")
 
     st.divider()
-    st.caption("※ 이 에디션은 ‘티니핑 느낌’의 오리지널 요정 컨셉입니다(공식 IP 사용 없음).")
+    st.caption("이 에디션은 ‘티니핑 느낌’의 **오리지널** 요정 컨셉입니다(공식 IP 사용 없음).")
 
 
 # =============================
-# Main
+# Main Layout
 # =============================
-ensure_state()
-
 st.title(APP_TITLE)
-st.caption("오늘의 작은 습관 체크가 내일의 마법이 돼요 ✨")
+st.caption("월간 캘린더에서 스티커처럼 습관을 한눈에 확인하고, AI 리포트로 내일을 준비해요 ✨")
 
-# --- 상단 탭 ---
-tab1, tab2, tab3 = st.tabs(["✅ 체크인", "🗓️ 캘린더", "📊 시각화"])
+# 상단 컨트롤: 월 이동
+today = date.today()
+sel: date = st.session_state.selected_day
 
-# =========================================================
-# TAB 1: 체크인
-# =========================================================
-with tab1:
-    st.subheader("✅ 오늘 체크인")
+c0, c1, c2, c3 = st.columns([1.2, 1, 1, 1.2])
+with c0:
+    year = st.number_input("연도", min_value=2020, max_value=2100, value=sel.year, step=1)
+with c1:
+    month = st.number_input("월", min_value=1, max_value=12, value=sel.month, step=1)
+with c2:
+    if st.button("오늘로 이동"):
+        st.session_state.selected_day = today
+        sel = today
+with c3:
+    # 날짜 직접 선택(캘린더 클릭 대신 확실하게)
+    picked = st.date_input("선택 날짜", value=sel)
+    st.session_state.selected_day = picked
+    sel = picked
 
-    # 도시 + 코치 스타일
-    c0, c1 = st.columns([1, 1])
-    with c0:
-        city = st.selectbox("🏙️ 도시 선택", options=CITIES, index=0)
-    with c1:
-        coach_style = st.radio("🧑‍🏫 코치 스타일", options=COACH_STYLES, horizontal=True)
+st.divider()
 
-    # 습관 체크박스 2열
-    left, right = st.columns(2)
-    habits_done: Dict[str, bool] = {}
-    for i, (emo, name) in enumerate(HABITS):
-        with (left if i % 2 == 0 else right):
-            habits_done[name] = st.checkbox(f"{emo} {name}", value=False, key=f"habit_{name}")
+# =============================
+# 캘린더 표시 (직관 강화)
+# =============================
+st.subheader("🗓️ 월간 습관 캘린더")
+st.caption("뱃지: 💖(80%↑) ✨(60%↑) 🫧(40%↑) 🌧️(1~39%) ⬜(0%)  ·  스티커: 이모지✅/▫️")
 
-    mood = st.slider("😊 오늘 기분 점수", 1, 10, 6)
+grid = month_grid(int(year), int(month))
+rmap = rec_map()
 
-    # 추가 입력: 물/운동 수치 + 메모
-    c2, c3, c4 = st.columns([1, 1, 2])
-    with c2:
-        water_ml = st.number_input("💧 물 (ml)", min_value=0, max_value=5000, value=500, step=100)
-    with c3:
-        exercise_min = st.number_input("🏃 운동 (분)", min_value=0, max_value=600, value=20, step=5)
-    with c4:
-        memo = st.text_input("📝 메모(주석)", value="", placeholder="예: 물 2L 목표! / 하체운동 20분 / 일찍 자기")
+# 헤더
+headers = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+hcols = st.columns(7)
+for i, h in enumerate(headers):
+    hcols[i].markdown(f"**{h}**")
 
-    # 시간대 체크(시각화용)
-    st.markdown("#### ⏰ 오늘 습관을 주로 실천한 시간대")
-    slot_cols = st.columns(4)
-    slot_done: Dict[str, bool] = {}
-    for i, (emo, slot) in enumerate(TIME_SLOTS):
-        with slot_cols[i]:
-            slot_done[slot] = st.checkbox(f"{emo} {slot}", value=False, key=f"slot_{slot}")
+for week in grid:
+    cols = st.columns(7)
+    for i, d in enumerate(week):
+        if d is None:
+            cols[i].write(" ")
+            continue
 
-    # 달성률
-    checked_count, rate = compute_today_achievement(habits_done)
+        rec = rmap.get(iso(d))
+        habits = (rec.get("habits") if rec else None) or {name: False for _, name in HABITS}
+        checked = calc_checked(habits)
+        rate = pct(checked, len(HABITS))
+        badge = badge_from_rate(rate)
+        stickers = cell_stickers(habits)
 
-    st.markdown("#### 📌 오늘 요약")
-    m1, m2, m3 = st.columns(3)
-    m1.metric("달성률", f"{rate}%")
-    m2.metric("달성 습관", f"{checked_count}/{len(HABITS)}")
-    m3.metric("기분", f"{mood}/10")
+        # 선택 날짜 강조
+        is_selected = (d == sel)
+        title = f"**{d.day}** {badge}" + ("  ✅" if is_selected else "")
 
-    # 저장 버튼 (UI 변경마다 기록이 덮이지 않도록 “저장” 시점 확정)
-    st.divider()
-    save_col1, save_col2 = st.columns([1, 2])
-    with save_col1:
-        save = st.button("💾 오늘 기록 저장", type="primary", use_container_width=True)
-    with save_col2:
-        st.caption("※ 저장을 눌러야 캘린더/통계에 반영됩니다.")
+        cols[i].markdown(title)
+        cols[i].caption(stickers)
 
-    if save:
-        rec = {
-            "date": today_iso(),
-            "mood": int(mood),
-            "water_ml": int(water_ml),
-            "exercise_min": int(exercise_min),
-            "memo": memo,
-            "time_slots": [s for s, v in slot_done.items() if v],
-            "habits": habits_done,
-        }
-        upsert_today_record(rec)
-        st.success("오늘 기록이 저장되었어요! ✨")
+        # 클릭 UX: 버튼으로 그 날짜 선택
+        if cols[i].button("선택", key=f"pick_{iso(d)}"):
+            st.session_state.selected_day = d
+            st.rerun()
 
-    # 7일 달성률 차트
-    st.subheader("📈 최근 7일 달성률")
-    df7 = last_7_days_rate_df()
-    if df7.empty:
-        st.info("아직 기록이 없어요. 오늘 기록을 저장해보세요!")
+st.divider()
+
+# =============================
+# 선택 날짜 기록 편집
+# =============================
+st.subheader(f"✍️ 기록 입력/수정 — {sel.isoformat()}")
+
+existing = get_rec(sel)
+default_habits = (existing.get("habits") if existing else None) or {name: False for _, name in HABITS}
+default_mood = safe_int(existing.get("mood"), 6) if existing else 6
+default_water = safe_int(existing.get("water_ml"), 500) if existing else 500
+default_ex = safe_int(existing.get("exercise_min"), 20) if existing else 20
+default_memo = str(existing.get("memo") or "") if existing else ""
+default_slots = set(existing.get("time_slots") or []) if existing else set()
+
+# 상단: 도시/코치 스타일
+cA, cB = st.columns([1, 1])
+with cA:
+    city = st.selectbox("🏙️ 도시 선택", options=CITIES, index=0, key="city")
+with cB:
+    coach_style = st.radio("🧑‍🏫 코치 스타일", options=COACH_STYLES, horizontal=True, key="coach_style")
+
+# 습관 체크박스 2열
+lcol, rcol = st.columns(2)
+habits_done: Dict[str, bool] = {}
+for idx, (emo, name) in enumerate(HABITS):
+    with (lcol if idx % 2 == 0 else rcol):
+        habits_done[name] = st.checkbox(f"{emo} {name}", value=bool(default_habits.get(name)), key=f"habit_{sel}_{name}")
+
+mood = st.slider("😊 기분 점수", 1, 10, default_mood, key=f"mood_{sel}")
+
+cC, cD, cE = st.columns([1, 1, 2])
+with cC:
+    water_ml = st.number_input("💧 물 (ml)", min_value=0, max_value=5000, value=default_water, step=100, key=f"water_{sel}")
+with cD:
+    exercise_min = st.number_input("🏃 운동 (분)", min_value=0, max_value=600, value=default_ex, step=5, key=f"ex_{sel}")
+with cE:
+    memo = st.text_input("📝 메모(주석)", value=default_memo, placeholder="예: 물 2L 목표 / 하체운동 / 일찍 자기", key=f"memo_{sel}")
+
+st.markdown("#### ⏰ 실천 시간대(체크)")
+slot_cols = st.columns(4)
+slot_done: Dict[str, bool] = {}
+for i, (emo, slot) in enumerate(TIME_SLOTS):
+    with slot_cols[i]:
+        slot_done[slot] = st.checkbox(f"{emo} {slot}", value=(slot in default_slots), key=f"slot_{sel}_{slot}")
+
+checked_count = calc_checked(habits_done)
+rate = pct(checked_count, len(HABITS))
+
+m1, m2, m3 = st.columns(3)
+m1.metric("달성률", f"{rate}%")
+m2.metric("달성 습관", f"{checked_count}/{len(HABITS)}")
+m3.metric("기분", f"{mood}/10")
+
+save1, save2 = st.columns([1, 2])
+with save1:
+    save_btn = st.button("💾 저장", type="primary", use_container_width=True)
+with save2:
+    st.caption("저장하면 캘린더/통계/리포트에 반영됩니다.")
+
+if save_btn:
+    rec = {
+        "date": iso(sel),
+        "mood": int(mood),
+        "water_ml": int(water_ml),
+        "exercise_min": int(exercise_min),
+        "memo": memo,
+        "time_slots": [s for s, v in slot_done.items() if v],
+        "habits": habits_done,
+    }
+    upsert_rec(rec)
+    st.success("저장 완료! 캘린더가 업데이트됩니다.")
+    st.rerun()
+
+st.divider()
+
+# =============================
+# 최근 7일 차트
+# =============================
+st.subheader("📈 최근 7일 달성률")
+df7 = last_7_days_rate_df()
+if df7.empty:
+    st.info("아직 기록이 없어요.")
+else:
+    st.bar_chart(df7.set_index("date")[["rate"]])
+
+st.divider()
+
+# =============================
+# 리포트 + 핑 카드
+# =============================
+st.subheader("🧠 컨디션 리포트 & 오늘의 파트너 핑")
+
+# 핑은 “선택 날짜” 기준으로 고정되게 (날짜마다 파트너가 다르게)
+ping = get_fairy_ping(seed_key=f"{iso(sel)}-ping")
+stats_df = pd.DataFrame({"stat": list(ping["stats"].keys()), "value": list(ping["stats"].values())})
+
+# 리포트 생성 버튼
+gen = st.button("컨디션 리포트 생성", use_container_width=True)
+
+if gen:
+    user_prompt = build_user_prompt(
+        city=city,
+        mood=int(mood),
+        checked_habits=[k for k, v in habits_done.items() if v],
+        unchecked_habits=[k for k, v in habits_done.items() if not v],
+        water_ml=int(water_ml),
+        exercise_min=int(exercise_min),
+        memo=memo,
+        time_slots_done=[s for s, v in slot_done.items() if v],
+        ping=ping,
+    )
+    with st.spinner("AI가 리포트를 작성하는 중..."):
+        report, err = generate_report(openai_api_key, coach_style, user_prompt)
+    st.session_state.last_report = report
+    st.session_state.last_openai_error = err
+
+# 출력 레이아웃
+colL, colR = st.columns([1.2, 1])
+
+with colR:
+    st.markdown("### 🎀 파트너 핑 카드")
+    st.markdown(f"**{ping['emoji']} {ping['name']}**  ·  *{ping['element']}*")
+    st.caption(ping["phrase"])
+
+    # 스탯 바 차트 (빨간색)
+    if alt is not None:
+        chart = (
+            alt.Chart(stats_df)
+            .mark_bar(color="#e74c3c")
+            .encode(
+                x=alt.X("value:Q", scale=alt.Scale(domain=[0, 100])),
+                y=alt.Y("stat:N", sort="-x"),
+                tooltip=["stat", "value"],
+            )
+            .properties(height=230)
+        )
+        st.altair_chart(chart, use_container_width=True)
     else:
-        st.bar_chart(df7.set_index("date")[["rate"]])
+        st.bar_chart(stats_df.set_index("stat"))
 
-    # 리포트 생성: 핑 카드 + AI
-    st.subheader("🧠 컨디션 리포트")
+    st.markdown("### 🔗 공유용 텍스트")
+    share = {
+        "date": iso(sel),
+        "city": city,
+        "coach_style": coach_style,
+        "mood": int(mood),
+        "habits": habits_done,
+        "water_ml": int(water_ml),
+        "exercise_min": int(exercise_min),
+        "time_slots": [s for s, v in slot_done.items() if v],
+        "memo": memo,
+        "ping": ping,
+        "report": st.session_state.last_report,
+        "openai_error": st.session_state.last_openai_error,
+    }
+    st.code(json.dumps(share, ensure_ascii=False, indent=2), language="json")
 
-    # 오늘의 핑 카드(저장 시점과 무관하게 오늘 기준 고정)
-    ping = st.session_state.last_ping or get_fairy_ping(seed_key=today_iso())
-    st.session_state.last_ping = ping
+with colL:
+    st.markdown("### 📝 AI 리포트")
+    if st.session_state.last_report:
+        st.markdown(st.session_state.last_report)
+    else:
+        st.caption("아직 리포트가 없어요. 버튼을 눌러 생성해보세요.")
 
-    btn = st.button("컨디션 리포트 생성", use_container_width=True)
+    if st.session_state.last_openai_error:
+        st.error("리포트 생성 오류가 발생했어요.")
+        with st.expander("오류 상세 보기"):
+            st.code(st.session_state.last_openai_error)
 
-    if btn:
-        if not clean(openai_api_key):
-            st.error("OpenAI API Key가 필요해요. 사이드바에 입력해 주세요.")
-        else:
-            time_slots_done = [s for s, v in slot_done.items() if v]
-            report = generate_report(
-                openai_api_key=openai_api_key,
-                coach_style=coach_style,
-                mood=int(mood),
-                city=city,
-                checked_habits=[k for k, v in habits_done.items() if v],
-                unchecked_habits=[k for k, v in habits_done.items() if not v],
-                water_ml=int(water_ml),
-                exercise_min=int(exercise_min),
-                memo=memo,
-                time_slots_done=time_slots_done,
-                ping=ping,
-            )
-            st.session_state.last_report = report
-
-    report = st.session_state.last_report
-
-    # 결과 레이아웃(2열): 왼쪽 리포트, 오른쪽 핑 카드
-    colL, colR = st.columns([1.2, 1])
-
-    with colR:
-        st.markdown("### 🎀 오늘의 파트너 핑")
-        st.markdown(f"**{ping['emoji']} {ping['name']}**  ·  *{ping['element']}*")
-        st.caption(ping["phrase"])
-
-        # 스탯 바차트 (빨간색 요구 → Altair로 색 지정)
-        stats_df = pd.DataFrame({"stat": list(ping["stats"].keys()), "value": list(ping["stats"].values())})
-
-        if alt is not None:
-            chart = (
-                alt.Chart(stats_df)
-                .mark_bar(color="#e74c3c")
-                .encode(
-                    x=alt.X("value:Q", scale=alt.Scale(domain=[0, 100])),
-                    y=alt.Y("stat:N", sort="-x"),
-                    tooltip=["stat", "value"],
-                )
-                .properties(height=220)
-            )
-            st.altair_chart(chart, use_container_width=True)
-        else:
-            # altair 미설치 시 기본 bar_chart(색 지정 불가)
-            st.bar_chart(stats_df.set_index("stat"))
-
-        st.markdown("### 🔗 공유용 텍스트")
-        share_payload = {
-            "date": today_iso(),
-            "city": city,
-            "coach_style": coach_style,
-            "mood": int(mood),
-            "habits": habits_done,
-            "water_ml": int(water_ml),
-            "exercise_min": int(exercise_min),
-            "time_slots": [s for s, v in slot_done.items() if v],
-            "memo": memo,
-            "ping": ping,
-            "report": report,
-        }
-        st.code(json.dumps(share_payload, ensure_ascii=False, indent=2), language="json")
-
-    with colL:
-        st.markdown("### 📝 AI 리포트")
-        if report:
-            st.markdown(report)
-        else:
-            st.caption("아직 리포트가 없어요. 버튼을 눌러 생성해보세요.")
-
-        with st.expander("📎 API 안내 / 준비물"):
-            st.markdown(
-                """
+    with st.expander("📎 API 안내 / 준비물"):
+        st.markdown(
+            """
 **필요한 것**
 - OpenAI API Key (리포트 생성용)
 
-**이 에디션 특징**
-- ‘티니핑 느낌’을 살린 **오리지널** 요정(핑) 카드로 구성되어 있어요.
-- 공식 캐릭터/로고/이미지는 포함하지 않습니다.
+**리포트가 안 될 때(중요)**
+- Streamlit Cloud라면 Secrets에 `OPENAI_API_KEY`를 저장했는지 확인
+- 로컬이면 `pip install openai` 설치 여부 확인
+- 키가 유효하지 않으면(401) 리포트 생성 실패
 
-**배포 팁(Streamlit Cloud)**
-- Secrets에 `OPENAI_API_KEY` 저장하면 편해요.
+**참고**
+- 이 앱은 저작권 이슈를 피하기 위해 ‘티니핑’ 공식 캐릭터/로고/이미지를 사용하지 않고,
+  오리지널 ‘핑 카드’로 분위기만 살렸습니다.
 """
-            )
-
-# =========================================================
-# TAB 2: 캘린더
-# =========================================================
-with tab2:
-    st.subheader("🗓️ 캘린더 기록 보기")
-
-    # 월 선택
-    today = date.today()
-    cA, cB = st.columns([1, 2])
-    with cA:
-        year = st.number_input("연도", min_value=2020, max_value=2100, value=today.year, step=1)
-        month = st.number_input("월", min_value=1, max_value=12, value=today.month, step=1)
-
-    rec_map = get_record_map()
-    weeks = month_calendar_dates(int(year), int(month))
-
-    st.caption("뱃지: 💖(80%↑) ✨(60%↑) 🫧(40%↑) 🌧️(1~39%) ⬜(0%)")
-
-    # 캘린더 그리드
-    header = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
-    cols = st.columns(7)
-    for i, h in enumerate(header):
-        cols[i].markdown(f"**{h}**")
-
-    for w in weeks:
-        cols = st.columns(7)
-        for i, d in enumerate(w):
-            if d is None:
-                cols[i].write(" ")
-                continue
-
-            iso = d.isoformat()
-            rec = rec_map.get(iso)
-            badge = day_badge(rec)
-
-            # 셀 표시
-            cols[i].markdown(f"**{d.day}** {badge}")
-
-    st.divider()
-    st.markdown("### 🔍 특정 날짜 상세 보기")
-    pick = st.date_input("날짜 선택", value=today)
-    iso = pick.isoformat()
-    rec = rec_map.get(iso)
-
-    if not rec:
-        st.info("해당 날짜 기록이 없어요.")
-    else:
-        habits = rec.get("habits") or {}
-        checked = sum(1 for _, name in HABITS if habits.get(name))
-        rate = pct(checked, len(HABITS))
-
-        m1, m2, m3 = st.columns(3)
-        m1.metric("달성률", f"{rate}%")
-        m2.metric("달성 습관", f"{checked}/{len(HABITS)}")
-        m3.metric("기분", f"{rec.get('mood', '-')}/10")
-
-        st.markdown("#### ✅ 습관")
-        lines = []
-        for emo, name in HABITS:
-            lines.append(habit_success_icon(bool(habits.get(name)), emo) + f" {name}")
-        st.write(" · ".join(lines))
-
-        st.markdown("#### ⏰ 시간대")
-        slots = rec.get("time_slots") or []
-        st.write(", ".join(slots) if slots else "(없음)")
-
-        st.markdown("#### 💧/🏃 수치")
-        st.write(f"- 물: {rec.get('water_ml', 0)} ml")
-        st.write(f"- 운동: {rec.get('exercise_min', 0)} 분")
-
-        st.markdown("#### 📝 메모(주석)")
-        st.write(rec.get("memo") or "(없음)")
-
-# =========================================================
-# TAB 3: 시각화
-# =========================================================
-with tab3:
-    st.subheader("📊 성공률 시각화(이모지)")
-
-    recs = sorted(st.session_state.records, key=lambda x: x.get("date", ""))[-14:]  # 최근 2주 정도로
-    if not recs:
-        st.info("기록이 없어요. 체크인 탭에서 저장해보세요.")
-    else:
-        # 1) 습관 종류별 성공률
-        st.markdown("### 1) 습관 종류별 성공률 (최근 14일)")
-        habit_rates = []
-        for emo, name in HABITS:
-            total = 0
-            done = 0
-            for r in recs:
-                h = (r.get("habits") or {}).get(name)
-                if h is None:
-                    continue
-                total += 1
-                if h:
-                    done += 1
-            p = (done / total) if total else 0.0
-            habit_rates.append((emo, name, p))
-
-        for emo, name, p in habit_rates:
-            st.write(f"{emo} **{name}**  ·  {slot_success_emoji(p)}  ({round(p*100,1)}%)")
-
-        st.divider()
-
-        # 2) 시간대별 성공률 (최근 14일) - "그 시간대에 실천했다"고 체크한 비율
-        st.markdown("### 2) 시간대별 실천 비율 (최근 14일)")
-        slot_rates = []
-        for emo, slot in TIME_SLOTS:
-            total = len(recs)
-            done = 0
-            for r in recs:
-                slots = r.get("time_slots") or []
-                if slot in slots:
-                    done += 1
-            p = (done / total) if total else 0.0
-            slot_rates.append((emo, slot, p))
-
-        for emo, slot, p in slot_rates:
-            st.write(f"{emo} **{slot}**  ·  {slot_success_emoji(p)}  ({round(p*100,1)}%)")
-
-        st.divider()
-
-        # 3) 날짜 × 습관 “스티커보드” (이모지로 이미지 느낌)
-        st.markdown("### 3) 스티커보드 (날짜 × 습관)")
-        st.caption("✅이면 성공 스티커, ▫️이면 빈 칸")
-
-        # 표 형태로 출력(이모지를 활용)
-        rows = []
-        for r in recs[-10:]:  # 너무 길어지지 않게 최근 10일
-            d = r.get("date", "")
-            habits = r.get("habits") or {}
-            row = {"date": d}
-            for emo, name in HABITS:
-                row[name] = habit_success_icon(bool(habits.get(name)), emo)
-            rows.append(row)
-
-        df = pd.DataFrame(rows)
-        st.dataframe(df, use_container_width=True, hide_index=True)
-
-        st.divider()
-
-        # 4) (선택) 수치 트렌드: 물/운동
-        st.markdown("### 4) 물/운동 트렌드 (최근 14일)")
-        df2 = pd.DataFrame(
-            [
-                {
-                    "date": r.get("date"),
-                    "water_ml": r.get("water_ml", 0),
-                    "exercise_min": r.get("exercise_min", 0),
-                }
-                for r in recs
-            ]
-        ).sort_values("date")
-
-        cX, cY = st.columns(2)
-        with cX:
-            st.markdown("#### 💧 물(ml)")
-            st.line_chart(df2.set_index("date")[["water_ml"]])
-        with cY:
-            st.markdown("#### 🏃 운동(분)")
-            st.line_chart(df2.set_index("date")[["exercise_min"]])
+        )
 
 st.caption("© AI 습관 트래커 (마법 요정 에디션) — 오늘의 체크가 내일의 마법 ✨")
